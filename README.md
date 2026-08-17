@@ -23,8 +23,10 @@ rides the **log download mechanism you already have**.
 | Path | What it is |
 |---|---|
 | `docs/PROPOSAL.md` | The full proposal: collection strategy, log integration, processing, visualization |
+| `docs/INTEGRATION_GUIDE.md` | Step-by-step: instrument an existing app (login page, dashboard cards, modals, forms) with zero backend changes |
 | `docs/LOG_FORMAT_SPEC.md` | Normative spec of the `heatmap-events/1` NDJSON log format |
 | `collector/heatmap-collector.js` | Zero-dependency browser SDK that captures clicks + time-spent and ships them to your backend logger |
+| `server/log-server.js` | Zero-dependency Node server that appends collector batches to a plain text NDJSON file — for apps without a convenient backend |
 | `processor/process_heatmap_logs.py` | Python 3 (stdlib only) aggregator: NDJSON logs → compact `heatmap-aggregate/1` JSON |
 | `visualizer/index.html` | Self-contained offline viewer (no CDN, no build step, works from `file://`) |
 | `examples/generate_sample.py` | Generates realistic sample logs for demo/testing |
