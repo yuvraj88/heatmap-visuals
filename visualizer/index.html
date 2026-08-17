@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interaction Heatmap Viewer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --hairline:    #e1e0d9;
+    --border:      rgba(11,11,11,0.10);
+    --accent:      #2a78d6;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:        #0d0d0d;
+    --surface:     #1a1a19;
+    --ink:         #ffffff;
+    --ink-2:       #c3c2b7;
+    --muted:       #898781;
+    --hairline:    #2c2c2a;
+    --border:      rgba(255,255,255,0.10);
+    --accent:      #3987e5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:        #0d0d0d;
+      --surface:     #1a1a19;
+      --ink:         #ffffff;
+      --ink-2:       #c3c2b7;
+      --muted:       #898781;
+      --hairline:    #2c2c2a;
+      --border:      rgba(255,255,255,0.10);
+      --accent:      #3987e5;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; }
+  h1 { font-size: 18px; font-weight: 650; margin: 0; }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 2px 0 0; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  header .spacer { flex: 1; }
+  button, select, label.filebtn {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button:hover, label.filebtn:hover { border-color: var(--muted); }
+  input[type=file] { display: none; }
+
+  #drop {
+    border: 1.5px dashed var(--muted); border-radius: 12px;
+    background: var(--surface); padding: 48px 24px; text-align: center;
+    color: var(--ink-2); cursor: pointer;
+  }
+  #drop.over { border-color: var(--accent); color: var(--ink); }
+  #drop b { color: var(--ink); }
+  #drop .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+
+  #appview { display: none; }
+  .controls {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin: 0 0 14px;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: transparent; padding: 6px 14px; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+  .tile .v { font-size: 22px; font-weight: 650; }
+  .tile .k { font-size: 12px; color: var(--ink-2); }
+
+  .stagewrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  #stage { position: relative; width: 100%; border-radius: 8px; overflow: hidden;
+           background: var(--surface); outline: 1px solid var(--hairline); }
+  #stage img, #stage canvas, #stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #shot { object-fit: fill; display: none; }
+  #overlay rect.el { fill: transparent; stroke: var(--muted); stroke-opacity: .55;
+                     stroke-width: 1; vector-effect: non-scaling-stroke; cursor: default; }
+  #overlay rect.el:hover { stroke: var(--ink); stroke-opacity: 1; stroke-width: 1.5; }
+  #overlay text { font: 10px system-ui, sans-serif; fill: var(--muted); pointer-events: none; }
+
+  .legend { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+            font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
+  #legendbar { width: 180px; height: 10px; border-radius: 5px; outline: 1px solid var(--border); }
+  .legend .cap { color: var(--muted); }
+
+  #tooltip {
+    position: fixed; z-index: 10; display: none; pointer-events: none;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.18); max-width: 320px;
+  }
+  #tooltip .tkey { font-weight: 600; word-break: break-all; }
+  #tooltip .trow { color: var(--ink-2); }
+  #tooltip .trow b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  h2 { font-size: 14px; font-weight: 650; margin: 22px 0 8px; }
+  .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 14px; border-top: 1px solid var(--hairline); white-space: nowrap; }
+  thead th { border-top: 0; color: var(--ink-2); font-weight: 600; cursor: pointer; user-select: none; }
+  thead th .arrow { color: var(--muted); font-size: 11px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.key { max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
+  td .kind { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .bar { display: inline-block; height: 8px; border-radius: 4px 4px 4px 4px; vertical-align: middle; }
+
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Interaction Heatmap Viewer</h1>
+      <p class="sub">Offline viewer for <code>heatmap-events/1</code> logs and <code>heatmap-aggregate/1</code> files</p>
+    </div>
+    <div class="spacer"></div>
+    <button id="themebtn" title="Toggle light/dark">◐ Theme</button>
+  </header>
+
+  <div id="drop">
+    <b>Drop heatmap log files here</b> — or click to browse.<br>
+    <span class="hint">Accepts <code>heatmap-interactions-*.ndjson</code> (multiple files OK) or a processed <code>heatmap-aggregate.json</code>. Nothing leaves this machine.</span>
+    <input id="filein" type="file" multiple accept=".ndjson,.log,.json,.txt">
+  </div>
+
+  <div id="appview">
+    <div class="controls">
+      <label for="routesel" style="color:var(--ink-2)">Screen</label>
+      <select id="routesel"></select>
+      <div class="seg" role="group" aria-label="Metric">
+        <button id="mode-clicks" aria-pressed="true">Clicks</button>
+        <button id="mode-dwell" aria-pressed="false">Time spent</button>
+      </div>
+      <label class="filebtn" for="shotin">Screenshot underlay…</label>
+      <input id="shotin" type="file" accept="image/*">
+      <button id="shotclear" style="display:none">Remove screenshot</button>
+      <div class="spacer" style="flex:1"></div>
+      <label class="filebtn" for="filein2">Load other files…</label>
+      <input id="filein2" type="file" multiple accept=".ndjson,.log,.json,.txt">
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="stagewrap">
+      <div id="stage">
+        <img id="shot" alt="">
+        <svg id="wire" viewBox="0 0 1000 625" preserveAspectRatio="none"></svg>
+        <canvas id="heat"></canvas>
+        <svg id="overlay" viewBox="0 0 1000 625" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="legend">
+        <span id="legendtitle"></span>
+        <span class="cap" id="legmin"></span>
+        <canvas id="legendbar" width="180" height="10"></canvas>
+        <span class="cap" id="legmax"></span>
+        <span class="cap" id="legnote"></span>
+      </div>
+    </div>
+
+    <h2>Elements — exact numbers</h2>
+    <div class="tablewrap"><table id="eltable">
+      <thead><tr>
+        <th data-k="key">Element <span class="arrow"></span></th>
+        <th class="num" data-k="clicks">Clicks <span class="arrow"></span></th>
+        <th class="num" data-k="clickShare">Click share <span class="arrow"></span></th>
+        <th class="num" data-k="dwellMs">Time visible <span class="arrow"></span></th>
+        <th data-k="_bar">Share</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p class="note" id="srcnote"></p>
+  </div>
+
+  <div id="tooltip"></div>
+</main>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------- palette
+ * Sequential ramps (single hue, light→dark) from the validated reference
+ * palette; lightness monotonicity verified. Clicks = blue, time = orange
+ * (second sequential context takes the next categorical hue). In dark mode
+ * the anchor flips: high magnitude uses the light end so it stays the most
+ * salient step against the dark surface. */
+const RAMPS = {
+  clicks: ["#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95","#0d366b"],
+  dwell:  ["#fbd9cb","#f6b89d","#f19770","#eb6834","#c04f22","#8f3b19","#5e2711"],
+};
+
+function isDark() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t === "dark";
+  return matchMedia("(prefers-color-scheme: dark)").matches;
+}
+function hex2rgb(h) { const n = parseInt(h.slice(1), 16); return [n>>16&255, n>>8&255, n&255]; }
+function rampColor(mode, t) {            // t in [0,1] -> [r,g,b]
+  let stops = RAMPS[mode].map(hex2rgb);
+  if (isDark()) stops = stops.slice().reverse();
+  const p = Math.min(Math.max(t, 0), 1) * (stops.length - 1);
+  const i = Math.min(Math.floor(p), stops.length - 2), f = p - i;
+  return [0,1,2].map(c => Math.round(stops[i][c] + (stops[i+1][c] - stops[i][c]) * f));
+}
+
+/* ------------------------------------------------------------------ state */
+const state = {
+  routes: {},          // route -> {views, sessions:Set|int, clicks, dwellMs, vp, grid, points, elements}
+  gridCols: 48, gridRows: 27,
+  route: null,
+  mode: "clicks",
+  sort: { k: "clicks", dir: -1 },
+  shots: {},           // route -> object URL
+  srcInfo: "",
+};
+
+function newRoute() {
+  return { views: 0, sessions: new Set(), clicks: 0, dwellMs: 0,
+           viewports: new Map(), grid: null, points: [], elements: new Map() };
+}
+function elKey(el) {
+  for (const k of ["tid", "id", "sel"]) if (typeof el[k] === "string" && el[k]) return [el[k], k];
+  return [null, null];
+}
+
+/* ---------------------------------------------------------------- parsing */
+function ingestFiles(files) {
+  const readers = [...files].map(f => f.text().then(text => ({ name: f.name, text })));
+  Promise.all(readers).then(loaded => {
+    state.routes = {}; state.route = null;
+    let events = 0, skipped = 0, aggFiles = 0;
+    for (const { text } of loaded) {
+      const trimmed = text.trimStart();
+      if (trimmed.startsWith("{") && trimmed.includes('"heatmap-aggregate/1"')) {
+        try { ingestAggregate(JSON.parse(text)); aggFiles++; continue; }
+        catch (e) { /* fall through to NDJSON */ }
+      }
+      for (const line of text.split("\n")) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          if (ingestEvent(JSON.parse(s))) events++; else skipped++;
+        } catch (e) { skipped++; }
+      }
+    }
+    state.srcInfo = `${loaded.length} file(s) — ` +
+      (aggFiles ? `${aggFiles} pre-aggregated` : `${events} events parsed`) +
+      (skipped ? `, ${skipped} lines skipped` : "");
+    afterLoad();
+  });
+}
+
+function ingestEvent(ev) {
+  if (!ev || ev.v !== 1 || typeof ev.route !== "string") return false;
+  if (!["click", "dwell", "view"].includes(ev.t)) return false;
+  const r = state.routes[ev.route] || (state.routes[ev.route] = newRoute());
+  if (typeof ev.sid === "string") r.sessions.add(ev.sid);
+  if (ev.vp && Number.isInteger(ev.vp.w) && ev.vp.w > 0 && Number.isInteger(ev.vp.h) && ev.vp.h > 0) {
+    const k = ev.vp.w + "x" + ev.vp.h;
+    r.viewports.set(k, (r.viewports.get(k) || 0) + 1);
+  }
+  if (ev.t === "view") { r.views++; return true; }
+  if (ev.t === "click") {
+    if (typeof ev.x === "number" && typeof ev.y === "number" &&
+        ev.x >= 0 && ev.x <= 1 && ev.y >= 0 && ev.y <= 1) {
+      r.clicks++;
+      if (r.points.length < 200000) r.points.push([ev.x, ev.y]);
+    }
+    touchElement(r, ev.el, 1, 0);
+    return true;
+  }
+  // dwell
+  if (!Number.isInteger(ev.ms) || ev.ms < 0) return false;
+  if (ev.el) touchElement(r, ev.el, 0, ev.ms);
+  else r.dwellMs += ev.ms;
+  return true;
+}
+
+function touchElement(r, el, clicks, dwellMs) {
+  if (!el || typeof el !== "object") return;
+  const [key, kind] = elKey(el);
+  if (!key) return;
+  let e = r.elements.get(key);
+  if (!e) { e = { key, kind, clicks: 0, dwellMs: 0, rect: null, _n: 0 }; r.elements.set(key, e); }
+  e.clicks += clicks; e.dwellMs += dwellMs;
+  const rc = el.rect;
+  if (Array.isArray(rc) && rc.length === 4 && rc.every(v => typeof v === "number")) {
+    if (!e.rect) e.rect = [0, 0, 0, 0];
+    // running mean of the box
+    e._n++;
+    for (let i = 0; i < 4; i++) e.rect[i] += (rc[i] - e.rect[i]) / e._n;
+  }
+}
+
+function ingestAggregate(agg) {
+  if (agg.grid && Number.isInteger(agg.grid.cols)) {
+    state.gridCols = agg.grid.cols; state.gridRows = agg.grid.rows;
+  }
+  for (const [route, v] of Object.entries(agg.routes || {})) {
+    const r = state.routes[route] || (state.routes[route] = newRoute());
+    r.views += v.views || 0;
+    r.clicks += v.clicks || 0;
+    r.dwellMs += v.dwellMs || 0;
+    r.sessions = typeof r.sessions === "number"
+      ? r.sessions + (v.sessions || 0)
+      : r.sessions.size + (v.sessions || 0);
+    if (v.vp) r.viewports.set(v.vp.w + "x" + v.vp.h, 1e9);
+    if (Array.isArray(v.clickGrid)) {
+      if (!r.grid) r.grid = v.clickGrid.map(row => row.slice());
+      else v.clickGrid.forEach((row, i) => row.forEach((n, j) => r.grid[i][j] += n));
+    }
+    for (const [key, e] of Object.entries(v.elements || {})) {
+      let m = r.elements.get(key);
+      if (!m) { m = { key, kind: e.kind || "sel", clicks: 0, dwellMs: 0, rect: e.rect || null, _n: 1 }; r.elements.set(key, m); }
+      m.clicks += e.clicks || 0; m.dwellMs += e.dwellMs || 0;
+      if (!m.rect && e.rect) m.rect = e.rect;
+    }
+  }
+  if (agg.source) state.srcInfo = `aggregate of ${agg.source.events} events from ${agg.source.files} file(s)`;
+}
+
+/* ------------------------------------------------------------------ views */
+const $ = id => document.getElementById(id);
+
+function afterLoad() {
+  const names = Object.keys(state.routes).sort(
+    (a, b) => state.routes[b].clicks - state.routes[a].clicks);
+  if (!names.length) { alert("No heatmap-events/1 data found in those files."); return; }
+  $("routesel").innerHTML = names.map(n =>
+    `<option value="${encodeURIComponent(n)}">${n}</option>`).join("");
+  state.route = names[0];
+  $("drop").style.display = "none";
+  $("appview").style.display = "block";
+  render();
+}
+
+function fmtMs(ms) {
+  if (ms < 1000) return ms + " ms";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + " s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m " + (s % 60) + "s";
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+function fmtN(n) { return n.toLocaleString("en-US"); }
+function sessionsOf(r) { return typeof r.sessions === "number" ? r.sessions : r.sessions.size; }
+
+function routeAspect(r) {
+  let best = null, bestN = -1;
+  for (const [k, n] of r.viewports) if (n > bestN) { bestN = n; best = k; }
+  if (!best) return 16 / 10;
+  const [w, h] = best.split("x").map(Number);
+  return w / h;
+}
+
+function render() {
+  const r = state.routes[state.route];
+  if (!r) return;
+  renderTiles(r);
+  layoutStage(r);
+  renderUnderlay(r);
+  renderHeat(r);
+  renderOverlay(r);
+  renderLegend(r);
+  renderTable(r);
+  $("srcnote").textContent = "Source: " + state.srcInfo +
+    ". All processing happens locally in this page.";
+}
+
+function renderTiles(r) {
+  const avg = r.views ? r.dwellMs / r.views : 0;
+  $("tiles").innerHTML = [
+    ["Views", fmtN(r.views)],
+    ["Sessions", fmtN(sessionsOf(r))],
+    ["Clicks", fmtN(r.clicks)],
+    ["Total time on screen", fmtMs(r.dwellMs)],
+    ["Avg time per view", fmtMs(Math.round(avg))],
+  ].map(([k, v]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+}
+
+function layoutStage(r) {
+  const stage = $("stage");
+  const aspect = routeAspect(r);
+  const w = stage.clientWidth || 960;
+  stage.style.height = Math.round(w / aspect) + "px";
+  const heat = $("heat");
+  heat.width = w; heat.height = Math.round(w / aspect);
+  for (const id of ["wire", "overlay"]) {
+    $(id).setAttribute("viewBox", `0 0 ${w} ${Math.round(w / aspect)}`);
+  }
+}
+
+function renderUnderlay(r) {
+  const shot = $("shot"), wire = $("wire");
+  const url = state.shots[state.route];
+  shot.style.display = url ? "block" : "none";
+  if (url) shot.src = url;
+  $("shotclear").style.display = url ? "" : "none";
+  wire.innerHTML = "";
+  if (url) return;                            // screenshot replaces the wireframe
+  const W = $("heat").width, H = $("heat").height;
+  const frag = [];
+  for (const e of r.elements.values()) {
+    if (!e.rect) continue;
+    const [x, y, w, h] = e.rect;
+    frag.push(`<rect x="${x*W}" y="${y*H}" width="${w*W}" height="${h*H}" rx="3"
+      fill="none" stroke="var(--hairline)" stroke-width="1"/>`);
+    const labeledInOverlay = state.mode === "dwell" && e.dwellMs > 0;
+    if (!labeledInOverlay && w * W > 70 && h * H > 16) {
+      frag.push(`<text x="${x*W+5}" y="${y*H+13}">${escapeHtml(shortKey(e.key))}</text>`);
+    }
+  }
+  wire.innerHTML = frag.join("");
+}
+
+/* Click density: stamp grayscale alpha, then colorize through the ramp LUT. */
+function renderHeat(r) {
+  const heat = $("heat"), ctx = heat.getContext("2d");
+  const W = heat.width, H = heat.height;
+  ctx.clearRect(0, 0, W, H);
+  if (state.mode !== "clicks") return;
+
+  const off = document.createElement("canvas");
+  off.width = W; off.height = H;
+  const octx = off.getContext("2d");
+  const radius = Math.max(14, Math.round(W / 42));
+
+  const stamp = (x, y, weight) => {
+    const g = octx.createRadialGradient(x, y, 0, x, y, radius);
+    g.addColorStop(0, `rgba(0,0,0,${Math.min(weight, 1)})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    octx.fillStyle = g;
+    octx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  };
+
+  if (r.points.length) {
+    const per = Math.min(0.28, 18 / Math.sqrt(r.points.length));
+    for (const [x, y] of r.points) stamp(x * W, y * H, per);
+  } else if (r.grid) {
+    let max = 0;
+    for (const row of r.grid) for (const n of row) max = Math.max(max, n);
+    if (!max) return;
+    const rows = r.grid.length, cols = r.grid[0].length;
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      const n = r.grid[i][j];
+      if (n) stamp((j + .5) / cols * W, (i + .5) / rows * H, 0.15 + 0.75 * (n / max));
+    }
+  } else return;
+
+  // Colorize: alpha -> ramp LUT (light→dark; flipped anchor in dark mode).
+  const img = octx.getImageData(0, 0, W, H);
+  const d = img.data;
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let a = 0; a < 256; a++) {
+    const t = a / 255;
+    const [cr, cg, cb] = rampColor("clicks", t);
+    lut[a*4] = cr; lut[a*4+1] = cg; lut[a*4+2] = cb;
+    lut[a*4+3] = Math.round(Math.min(1, t * 1.6) * 216);   // 0 recedes fully
+  }
+  for (let p = 0; p < d.length; p += 4) {
+    const a = d[p + 3];
+    d[p] = lut[a*4]; d[p+1] = lut[a*4+1]; d[p+2] = lut[a*4+2]; d[p+3] = lut[a*4+3];
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/* Element overlay: hover targets always; in time-spent mode also the encoding. */
+function renderOverlay(r) {
+  const ov = $("overlay");
+  const W = $("heat").width, H = $("heat").height;
+  const els = [...r.elements.values()].filter(e => e.rect);
+  let maxDwell = 0;
+  for (const e of els) maxDwell = Math.max(maxDwell, e.dwellMs);
+  const frag = [];
+  for (const e of els) {
+    const [x, y, w, h] = e.rect;
+    let fill = "transparent";
+    if (state.mode === "dwell" && maxDwell > 0 && e.dwellMs > 0) {
+      const t = Math.sqrt(e.dwellMs / maxDwell);       // sqrt: keep mid-values legible
+      const [cr, cg, cb] = rampColor("dwell", t);
+      fill = `rgba(${cr},${cg},${cb},${(0.25 + 0.6 * t).toFixed(3)})`;
+    }
+    frag.push(`<rect class="el" data-key="${escapeHtml(e.key)}"
+      x="${x*W}" y="${y*H}" width="${Math.max(w*W,6)}" height="${Math.max(h*H,6)}" rx="3"
+      style="fill:${fill}"/>`);
+    // In time-spent mode the fill can be dark: draw the label on top, with
+    // ink chosen against the actual fill so it stays legible.
+    if (state.mode === "dwell" && e.dwellMs > 0 && w * W > 70 && h * H > 16) {
+      const t = maxDwell ? Math.sqrt(e.dwellMs / maxDwell) : 0;
+      const [cr, cg, cb] = rampColor("dwell", t);
+      const lum = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+      const ink = lum < 150 ? "#ffffff" : "#0b0b0b";
+      frag.push(`<text x="${x*W+6}" y="${y*H+14}" style="fill:${ink};font-size:11px"
+        pointer-events="none">${escapeHtml(shortKey(e.key))} · ${fmtMs(e.dwellMs)}</text>`);
+    }
+  }
+  ov.innerHTML = frag.join("");
+  for (const rect of ov.querySelectorAll("rect.el")) {
+    rect.addEventListener("pointermove", ev => showTip(ev, r, rect.dataset.key));
+    rect.addEventListener("pointerleave", hideTip);
+  }
+}
+
+function renderLegend(r) {
+  const bar = $("legendbar"), ctx = bar.getContext("2d");
+  for (let x = 0; x < bar.width; x++) {
+    const [cr, cg, cb] = rampColor(state.mode === "clicks" ? "clicks" : "dwell", x / (bar.width - 1));
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillRect(x, 0, 1, bar.height);
+  }
+  if (state.mode === "clicks") {
+    $("legendtitle").textContent = "Click density";
+    $("legmin").textContent = "none";
+    $("legmax").textContent = "most clicked";
+    $("legnote").textContent = `(${fmtN(r.clicks)} clicks total — exact per-element counts in the table)`;
+  } else {
+    let maxDwell = 0;
+    for (const e of r.elements.values()) maxDwell = Math.max(maxDwell, e.dwellMs);
+    $("legendtitle").textContent = "Time visible per element";
+    $("legmin").textContent = "0";
+    $("legmax").textContent = fmtMs(maxDwell);
+    $("legnote").textContent = "(square-root scale)";
+  }
+}
+
+function renderTable(r) {
+  const tbody = $("eltable").querySelector("tbody");
+  const totalClicks = Math.max(1, [...r.elements.values()].reduce((s, e) => s + e.clicks, 0));
+  const totalDwell = Math.max(1, [...r.elements.values()].reduce((s, e) => s + e.dwellMs, 0));
+  const rows = [...r.elements.values()].map(e => ({
+    ...e,
+    clickShare: e.clicks / totalClicks,
+    dwellShare: e.dwellMs / totalDwell,
+  }));
+  const { k, dir } = state.sort;
+  rows.sort((a, b) => {
+    const va = k === "key" ? a.key : (k === "clickShare" ? a.clickShare : a[k]);
+    const vb = k === "key" ? b.key : (k === "clickShare" ? b.clickShare : b[k]);
+    return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
+  });
+  const mode = state.mode;
+  tbody.innerHTML = rows.map(e => {
+    const share = mode === "clicks" ? e.clickShare : e.dwellShare;
+    const [cr, cg, cb] = rampColor(mode === "clicks" ? "clicks" : "dwell", Math.sqrt(share));
+    return `<tr>
+      <td class="key" title="${escapeHtml(e.key)}">${escapeHtml(e.key)}<span class="kind">${e.kind}</span></td>
+      <td class="num">${fmtN(e.clicks)}</td>
+      <td class="num">${(e.clickShare * 100).toFixed(1)}%</td>
+      <td class="num">${e.dwellMs ? fmtMs(e.dwellMs) : "—"}</td>
+      <td><span class="bar" style="width:${Math.max(2, Math.round(share * 140))}px;
+        background:rgb(${cr},${cg},${cb})"></span></td>
+    </tr>`;
+  }).join("");
+  for (const th of $("eltable").querySelectorAll("thead th")) {
+    const arrow = th.querySelector(".arrow");
+    if (arrow) arrow.textContent = th.dataset.k === k ? (dir < 0 ? "▼" : "▲") : "";
+  }
+}
+
+/* ---------------------------------------------------------------- tooltip */
+function showTip(ev, r, key) {
+  const e = r.elements.get(key);
+  if (!e) return;
+  const tip = $("tooltip");
+  tip.innerHTML = `<div class="tkey">${escapeHtml(e.key)}</div>
+    <div class="trow">clicks <b>${fmtN(e.clicks)}</b></div>
+    <div class="trow">time visible <b>${e.dwellMs ? fmtMs(e.dwellMs) : "—"}</b></div>
+    <div class="trow">identified by <b>${e.kind}</b></div>`;
+  tip.style.display = "block";
+  const pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  const bw = tip.offsetWidth, bh = tip.offsetHeight;
+  if (x + bw > innerWidth - 8) x = ev.clientX - bw - pad;
+  if (y + bh > innerHeight - 8) y = ev.clientY - bh - pad;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { $("tooltip").style.display = "none"; }
+
+/* ------------------------------------------------------------------ misc */
+function shortKey(k) { return k.length > 34 ? k.slice(0, 31) + "…" : k; }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ------------------------------------------------------------------ wiring */
+$("drop").addEventListener("click", () => $("filein").click());
+$("filein").addEventListener("change", ev => ingestFiles(ev.target.files));
+$("filein2").addEventListener("change", ev => ingestFiles(ev.target.files));
+for (const ev of ["dragover", "dragleave", "drop"]) {
+  document.body.addEventListener(ev, e => {
+    e.preventDefault();
+    $("drop").classList.toggle("over", ev === "dragover");
+    if (ev === "drop" && e.dataTransfer.files.length) ingestFiles(e.dataTransfer.files);
+  });
+}
+$("routesel").addEventListener("change", ev => {
+  state.route = decodeURIComponent(ev.target.value); render();
+});
+$("mode-clicks").addEventListener("click", () => setMode("clicks"));
+$("mode-dwell").addEventListener("click", () => setMode("dwell"));
+function setMode(m) {
+  state.mode = m;
+  $("mode-clicks").setAttribute("aria-pressed", m === "clicks");
+  $("mode-dwell").setAttribute("aria-pressed", m === "dwell");
+  render();
+}
+$("shotin").addEventListener("change", ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  if (state.shots[state.route]) URL.revokeObjectURL(state.shots[state.route]);
+  state.shots[state.route] = URL.createObjectURL(f);
+  render();
+});
+$("shotclear").addEventListener("click", () => {
+  URL.revokeObjectURL(state.shots[state.route]);
+  delete state.shots[state.route];
+  render();
+});
+$("themebtn").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = cur === "dark" ? "light" : "dark";
+  if (state.route) render();
+});
+for (const th of $("eltable").querySelectorAll("thead th")) {
+  th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if (!k || k === "_bar") return;
+    if (state.sort.k === k) state.sort.dir = -state.sort.dir;
+    else state.sort = { k, dir: k === "key" ? 1 : -1 };
+    if (state.route) renderTable(state.routes[state.route]);
+  });
+}
+addEventListener("resize", () => { if (state.route) render(); });
+</script>
+</body>
+</html>
