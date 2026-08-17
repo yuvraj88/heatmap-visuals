@@ -70,6 +70,54 @@ def el_obj(kind, key, rect):
     return {kind: key, "rect": rect}
 
 
+# /signup form fields, in fill order:
+# (name, ftype, rect, mean focus seconds, mean edits, P(abandon before this field))
+SIGNUP_FIELDS = [
+    ("fullname", "text",     [0.35, 0.22, 0.30, 0.05],  6, 12, 0.00),
+    ("email",    "email",    [0.35, 0.30, 0.30, 0.05],  8, 18, 0.03),
+    ("company",  "text",     [0.35, 0.38, 0.30, 0.05], 14, 15, 0.22),
+    ("role",     "select",   [0.35, 0.46, 0.30, 0.05],  9,  2, 0.10),
+    ("password", "password", [0.35, 0.54, 0.30, 0.05], 11, 22, 0.08),
+]
+SIGNUP_SUBMIT = ("tid", "signup.submit", [0.35, 0.64, 0.14, 0.055])
+
+
+def signup_session(emit_fn, ts):
+    """One signup attempt: field-by-field fill with a chance to abandon."""
+    touched, filled, total_ms = 0, 0, 0
+    abandoned = False
+    for name, ftype, rect, mean_s, mean_edits, p_abandon in SIGNUP_FIELDS:
+        if random.random() < p_abandon:
+            abandoned = True
+            break
+        ts += random.randint(500, 3_000)
+        emit_fn(ts, {"t": "click", "x": round(clamp01(rect[0] + rect[2] / 2), 4),
+                     "y": round(clamp01(rect[1] + rect[3] / 2), 4),
+                     "el": {"name": name, "rect": rect}})
+        ms = max(400, int(random.gauss(mean_s, mean_s / 3) * 1000))
+        edits = max(0, int(random.gauss(mean_edits, mean_edits / 3)))
+        ts += ms
+        is_filled = random.random() > 0.06
+        emit_fn(ts, {"t": "field", "ms": ms, "edits": edits, "filled": is_filled,
+                     "ftype": ftype, "el": {"name": name, "rect": rect},
+                     "form": "signup"})
+        touched += 1
+        filled += 1 if is_filled else 0
+        total_ms += ms
+    ts += random.randint(500, 4_000)
+    if not abandoned:
+        kind, key, rect = SIGNUP_SUBMIT
+        emit_fn(ts, {"t": "click", "x": round(clamp01(rect[0] + rect[2] / 2), 4),
+                     "y": round(clamp01(rect[1] + rect[3] / 2), 4),
+                     "el": {kind: key, "rect": rect}})
+    emit_fn(ts, {"t": "form", "form": "signup",
+                 "outcome": "abandon" if abandoned else "submit",
+                 "touched": touched, "filled": filled, "ms": total_ms,
+                 "fields": len(SIGNUP_FIELDS)})
+    emit_fn(ts, {"t": "dwell", "ms": total_ms + random.randint(3_000, 15_000)})
+    return ts
+
+
 def main():
     out = sys.stdout
     ts = 1755400000000  # 2026-08-17 morning, UTC
@@ -81,6 +129,16 @@ def main():
         vp_w, vp_h = random.choice(VIEWPORTS)
         vp = {"w": vp_w, "h": vp_h}
         ts += random.randint(30_000, 900_000)
+
+        # ~40 % of sessions attempt the signup form
+        if random.random() < 0.4:
+            def emit_signup(ev_ts, extra):
+                ev = {"v": 1, "ts": ev_ts, "sid": sid, "route": "/signup",
+                      "vp": vp, "app": APP}
+                ev.update(extra)
+                out.write(json.dumps(ev, separators=(",", ":")) + "\n")
+            emit_signup(ts, {"t": "view"})
+            ts = signup_session(lambda ev_ts, extra: emit_signup(ev_ts, extra), ts)
 
         for _visit in range(random.randint(1, 4)):
             route = random.choices(route_names, weights=route_weights)[0]

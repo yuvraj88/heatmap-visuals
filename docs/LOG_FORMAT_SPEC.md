@@ -16,7 +16,7 @@
 | Field | Type | Req | Description |
 |---|---|---|---|
 | `v` | int | ✔ | Schema version. This spec defines `1`. Consumers skip unknown versions. |
-| `t` | string | ✔ | Event type: `"click"` \| `"dwell"` \| `"view"`. Unknown types are skipped, enabling forward-compatible additions (e.g. `"scroll"`). |
+| `t` | string | ✔ | Event type: `"click"` \| `"dwell"` \| `"view"` \| `"field"` \| `"form"`. Unknown types are skipped, enabling forward-compatible additions (e.g. `"scroll"`). |
 | `ts` | int | ✔ | Event time, Unix epoch **milliseconds** (client clock). |
 | `sid` | string | ✔ | Random per-browser-session UUID v4. Anonymous; never derived from user identity. |
 | `route` | string | ✔ | Normalized route/screen identifier, e.g. `"/orders/:id"` if the router template is known, else the pathname. Query strings MUST be stripped. |
@@ -63,17 +63,58 @@ denominator for per-view rates.
 {"v":1,"t":"view","ts":1755446400001,"sid":"5f0c…","route":"/orders","vp":{"w":1440,"h":900},"app":"2.14.0"}
 ```
 
+### 3.4 `field`
+
+Engagement with one form field, emitted on blur (focus lost). Captures **how**
+users fill forms without capturing **what** they type: the only value-derived
+datum is the boolean `filled`.
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `ms` | int | ✔ | Milliseconds the field held focus during this focus episode. |
+| `edits` | int | ✔ | Count of `input` events during the episode (typing/paste/toggle activity — never content). |
+| `filled` | bool | ✔ | Field non-empty (text), checked (checkbox/radio), or selected (select) at blur. Derived in-collector; the value itself is never read out. |
+| `el` | object | ✔ | The field, see §4 (`name` allowed here). |
+| `form` | string | – | Identity of the enclosing `<form>` (same precedence as §4). Absent for free-standing fields. |
+| `ftype` | string | – | Input type (`"text"`, `"email"`, `"checkbox"`, `"select"`, …). |
+
+A field focused several times produces several events; consumers **sum** `ms`
+and `edits` and **OR** `filled` per field.
+
+```json
+{"v":1,"t":"field","ts":1755446500123,"sid":"5f0c…","route":"/signup","vp":{"w":1440,"h":900},"ms":8210,"edits":14,"filled":true,"ftype":"email","el":{"name":"email","rect":[0.35,0.30,0.30,0.05]},"form":"signup"}
+```
+
+### 3.5 `form`
+
+Outcome of one form attempt, emitted on submit, or on route change / page hide
+while touched fields remain (abandonment).
+
+| Field | Type | Req | Description |
+|---|---|---|---|
+| `form` | string | ✔ | Form identity. |
+| `outcome` | string | ✔ | `"submit"` \| `"abandon"`. |
+| `touched` | int | ✔ | Distinct fields the user focused during the attempt. |
+| `filled` | int | ✔ | Distinct fields left filled at attempt end. |
+| `ms` | int | ✔ | Total focused milliseconds across the attempt's fields. |
+| `fields` | int | – | Total fields the form contains, if known (funnel denominator). |
+
+```json
+{"v":1,"t":"form","ts":1755446550000,"sid":"5f0c…","route":"/signup","vp":{"w":1440,"h":900},"form":"signup","outcome":"abandon","touched":3,"filled":2,"ms":21300,"fields":5}
+```
+
 ## 4. Element object (`el`)
 
 | Field | Type | Req | Description |
 |---|---|---|---|
 | `tid` | string | –* | `data-track-id` value. Preferred stable identity. |
 | `id` | string | –* | Element `id` attribute (only if not framework-generated). |
+| `name` | string | –* | `name` attribute — form fields and forms only. |
 | `sel` | string | –* | Generated structural CSS selector, ≤ 4 levels, e.g. `"main>div.toolbar>button:nth-of-type(2)"`. |
 | `rect` | array | ✔ | Bounding box normalized to viewport: `[x, y, w, h]`, floats in `[0,1]`, 4-decimal precision. |
 
-*At least one of `tid` / `id` / `sel` MUST be present. Consumers key elements by
-the first present of `tid` → `id` → `sel`.
+*At least one of `tid` / `id` / `name` / `sel` MUST be present. Consumers key
+elements by the first present of `tid` → `id` → `name` → `sel`.
 
 **Privacy invariant:** no field in this schema may carry element text content,
 input values, attribute values other than `id`/`data-track-id`, or any

@@ -36,7 +36,9 @@ rides the **log download mechanism you already have**.
    runs from `file://`).
 2. Drag `examples/sample-heatmap.ndjson` onto the drop zone.
 3. Pick a route, switch between **Clicks** and **Time spent**, hover the element
-   overlays, and check the table view.
+   overlays, and check the table view. Select the `/signup` route to see the
+   form analytics: time focused per field, edit counts, fill rates, and
+   submit-vs-abandon completion.
 
 Optionally upload a screenshot of the corresponding app screen to overlay the
 heatmap on the real UI; without one, the visualizer draws a wireframe of the
@@ -66,5 +68,18 @@ elements it saw in the log.
 ## Privacy
 
 The collector records **where** users interact, never **what** they type or read:
-coordinates, element selectors, and durations only. Session IDs are random per
+coordinates, element selectors/field names, durations, and edit counts only.
+For form fields the single value-derived datum is a boolean "left filled or
+not" — the value itself never leaves one function inside the collector, which
+the included Playwright test verifies (typed names, emails, and passwords do
+not appear anywhere in the emitted payload). Session IDs are random per
 browser session. See `docs/PROPOSAL.md` §1.4.
+
+## Retrofitting an already-running product
+
+All capture is document-level event delegation, so no component or form needs
+to change: add the one script tag, add the append-only backend route, done.
+Existing `name`/`id` attributes identify fields; `data-track-id` is optional
+polish. Every event type — clicks, time spent, views, form-field engagement,
+form outcomes — lands in the **same single log file**, which travels through
+your existing log download unchanged.

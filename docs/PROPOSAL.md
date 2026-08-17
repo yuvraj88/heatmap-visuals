@@ -35,6 +35,18 @@ Design constraints honored throughout:
 | `dwell` (route) | route change, tab hide, page unload | *How long do users spend on each screen?* Accumulated visible time per route. |
 | `dwell` (element) | `IntersectionObserver` on tagged elements | *Which areas are on screen the longest?* Visible-time per `data-track-id` element. |
 | `view` | route change / initial load | Denominator for rates; carries viewport size for coordinate reconstruction. |
+| `field` | form field loses focus (plus a `change` fallback for autofill/programmatic changes) | *Are users filling the forms, and where do they spend the actual time?* Focused milliseconds, edit-event count, and a filled-or-not **boolean** per field — never the value. |
+| `form` | form submit, or route change / page hide with touched fields | *Do form attempts complete?* Outcome (`submit`/`abandon`), fields touched vs filled, total focused time. |
+
+### 1.1.1 Retrofitting a product that is already running
+
+No per-component changes are required. All capture is **document-level event
+delegation** (`click`, `focusin`/`focusout`, `input`, `change`, `submit` in the
+capture phase), so integration is one `<script>` tag in the existing app shell
+plus one backend route. Form fields are identified by the `name`/`id`
+attributes they already have; `data-track-id` is an optional improvement for
+long-term stability, not a prerequisite. Roll out behind a feature flag and the
+running product is otherwise untouched.
 
 Coordinates are stored **normalized to the viewport** (`x, y ∈ [0,1]`) together
 with the viewport size, so sessions with different window sizes aggregate
@@ -74,10 +86,13 @@ application's **own backend** on the same private network:
 ### 1.4 Privacy & footprint
 
 - Captured: timestamps, route paths, normalized coordinates, element
-  selectors/track-ids, durations, viewport size, a random per-browser-session
-  UUID (rotates when the tab session ends; never derived from the user).
+  selectors/track-ids/field names, durations, edit-event counts, filled-or-not
+  booleans, viewport size, a random per-browser-session UUID (rotates when the
+  tab session ends; never derived from the user).
 - **Never captured:** keystrokes, input values, text content, URLs' query
-  strings (stripped), user names/IDs, IP addresses.
+  strings (stripped), user names/IDs, IP addresses. For form fields the single
+  value-derived datum is the boolean "left non-empty / checked"; the value is
+  read in exactly one collector function and only that boolean leaves it.
 - Overhead: the collector is ~4 KB minified, passive listeners only; typical
   volume is 2–10 KB of NDJSON per user-session.
 
@@ -105,6 +120,13 @@ a checkbox and lets the visualizer consume the file without filtering.
 Rotation: daily, plus a size cap (default 50 MB/file); compress on rotation;
 retain N days (default 14) — reuse whatever rotation utility the other logs use.
 The existing "download logs" flow simply includes the `heatmap/` directory.
+
+**All interaction event types share this one file** — clicks, dwell, views,
+form-field engagement, and form outcomes are lines in the same NDJSON stream,
+so a single downloaded file carries the complete picture. If a literal single
+file is preferred over daily rotation, rotate by size only; the processor and
+visualizer accept one file or many interchangeably (concatenation is also
+valid NDJSON: `cat *.ndjson > all.ndjson`).
 
 ### 2.2 Format: NDJSON (`heatmap-events/1`)
 

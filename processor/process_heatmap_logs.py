@@ -56,8 +56,8 @@ def parse_date_ms(value, end_of_day=False):
 
 
 def element_key(el):
-    """Spec §4: identity precedence tid -> id -> sel."""
-    for kind in ("tid", "id", "sel"):
+    """Spec §4: identity precedence tid -> id -> name -> sel."""
+    for kind in ("tid", "id", "name", "sel"):
         value = el.get(kind)
         if isinstance(value, str) and value:
             return value, kind
@@ -78,6 +78,17 @@ class RouteAgg:
             "clicks": 0, "dwellMs": 0, "kind": None,
             "_rect": [0.0, 0.0, 0.0, 0.0], "_rect_n": 0,
         })
+        # key -> form-field engagement (t=="field" events)
+        self.fields = defaultdict(lambda: {
+            "focusMs": 0, "edits": 0, "blurs": 0, "form": None, "ftype": None,
+            "kind": None, "_touched": set(), "_filled": set(),
+            "_rect": [0.0, 0.0, 0.0, 0.0], "_rect_n": 0,
+        })
+        # formKey -> attempt outcomes (t=="form" events)
+        self.forms = defaultdict(lambda: {
+            "submits": 0, "abandons": 0, "ms": 0,
+            "touched": 0, "filled": 0, "fields": 0,
+        })
 
     def add_rect(self, entry, rect):
         if (isinstance(rect, list) and len(rect) == 4
@@ -94,6 +105,26 @@ class RouteAgg:
             if e["_rect_n"]:
                 out["rect"] = [round(v / e["_rect_n"], 4) for v in e["_rect"]]
             elements[key] = out
+        fields = {}
+        for key, f in sorted(self.fields.items(), key=lambda kv: -kv[1]["focusMs"]):
+            out = {"focusMs": f["focusMs"], "edits": f["edits"], "blurs": f["blurs"],
+                   "sessionsTouched": len(f["_touched"]),
+                   "sessionsFilled": len(f["_filled"]),
+                   "form": f["form"], "ftype": f["ftype"], "kind": f["kind"]}
+            if f["_rect_n"]:
+                out["rect"] = [round(v / f["_rect_n"], 4) for v in f["_rect"]]
+            fields[key] = out
+        forms = {}
+        for key, fo in sorted(self.forms.items(),
+                              key=lambda kv: -(kv[1]["submits"] + kv[1]["abandons"])):
+            attempts = fo["submits"] + fo["abandons"]
+            forms[key] = {
+                "submits": fo["submits"], "abandons": fo["abandons"],
+                "avgMs": round(fo["ms"] / attempts) if attempts else 0,
+                "avgTouched": round(fo["touched"] / attempts, 2) if attempts else 0,
+                "avgFilled": round(fo["filled"] / attempts, 2) if attempts else 0,
+                "fields": fo["fields"],
+            }
         vp = None
         if self.viewports:
             w, h = self.viewports.most_common(1)[0][0]
@@ -106,6 +137,8 @@ class RouteAgg:
             "vp": vp,
             "clickGrid": self.grid,
             "elements": elements,
+            "fields": fields,
+            "forms": forms,
         }
 
 
@@ -149,7 +182,7 @@ def main(argv=None):
                     skipped += 1
                     continue
                 etype, ts, route = ev.get("t"), ev.get("ts"), ev.get("route")
-                if etype not in ("click", "dwell", "view") \
+                if etype not in ("click", "dwell", "view", "field", "form") \
                         or not isinstance(ts, int) or not isinstance(route, str):
                     skipped += 1
                     continue
@@ -202,6 +235,53 @@ def main(argv=None):
                             agg.add_rect(entry, el.get("rect"))
                     else:
                         agg.dwell_ms += ms
+                elif etype == "field":
+                    ms = ev.get("ms")
+                    el = ev.get("el")
+                    if not isinstance(ms, int) or ms < 0 or not isinstance(el, dict):
+                        skipped += 1
+                        continue
+                    key, kind = element_key(el)
+                    if not key:
+                        skipped += 1
+                        continue
+                    f = agg.fields[key]
+                    f["focusMs"] += ms
+                    f["edits"] += ev.get("edits", 0) if isinstance(ev.get("edits"), int) else 0
+                    f["blurs"] += 1
+                    f["kind"] = f["kind"] or kind
+                    f["form"] = f["form"] or ev.get("form")
+                    f["ftype"] = f["ftype"] or ev.get("ftype")
+                    sid = ev.get("sid")
+                    if isinstance(sid, str):
+                        f["_touched"].add(sid)
+                        if ev.get("filled") is True:
+                            f["_filled"].add(sid)
+                    if (isinstance(el.get("rect"), list) and len(el["rect"]) == 4
+                            and all(isinstance(v, (int, float)) for v in el["rect"])):
+                        for i in range(4):
+                            f["_rect"][i] += el["rect"][i]
+                        f["_rect_n"] += 1
+                    # Focused time also counts as time spent on the element, so
+                    # form fields light up in the time-spent heatmap.
+                    entry = agg.elements[key]
+                    entry["dwellMs"] += ms
+                    entry["kind"] = entry["kind"] or kind
+                    agg.add_rect(entry, el.get("rect"))
+                elif etype == "form":
+                    form_key = ev.get("form")
+                    outcome = ev.get("outcome")
+                    if not isinstance(form_key, str) or outcome not in ("submit", "abandon"):
+                        skipped += 1
+                        continue
+                    fo = agg.forms[form_key]
+                    fo["submits" if outcome == "submit" else "abandons"] += 1
+                    for src, dst in (("ms", "ms"), ("touched", "touched"),
+                                     ("filled", "filled")):
+                        if isinstance(ev.get(src), int) and ev[src] >= 0:
+                            fo[dst] += ev[src]
+                    if isinstance(ev.get("fields"), int):
+                        fo["fields"] = max(fo["fields"], ev["fields"])
 
     out = {
         "schema": SCHEMA_OUT,

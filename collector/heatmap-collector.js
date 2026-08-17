@@ -69,6 +69,8 @@
     var tid = el.getAttribute && el.getAttribute("data-track-id");
     if (tid) info.tid = tid;
     else if (el.id && !/[:\d]{2,}|^radix|^mui|^ember|^react/i.test(el.id)) info.id = el.id;
+    else if (el.name && typeof el.name === "string" &&
+             /^(input|textarea|select|form)$/i.test(el.tagName)) info.name = el.name;
     else info.sel = shortSelector(el);
 
     var r = el.getBoundingClientRect();
@@ -191,11 +193,144 @@
     for (var i = 0; i < tagged.length; i++) observer.observe(tagged[i]);
   }
 
+  // ------------------------------------------------------------- form fields
+  //
+  // Delegated at the document level, so an already-running product needs NO
+  // per-form changes: existing name/id attributes identify fields. Privacy:
+  // isFilled() is the ONLY place a field's value is touched, and only a
+  // boolean leaves it.
+
+  var FIELD_SELECTOR = "input, textarea, select, [contenteditable=true]";
+  var activeField = null;          // { el, info, form, ftype, since, edits }
+  var formAttempts = {};           // formKey -> { touched:{}, filled:{}, ms, fields }
+
+  function isFilled(el) {
+    try {
+      if (el.matches("input[type=checkbox], input[type=radio]")) return !!el.checked;
+      if (el.tagName === "SELECT") return el.value !== "";
+      if (el.isContentEditable) return el.textContent.trim().length > 0;
+      return typeof el.value === "string" && el.value.trim().length > 0;
+    } catch (e) { return false; }
+  }
+
+  function identityKey(info) {
+    return info.tid || info.id || info.name || info.sel || null;
+  }
+
+  function formKeyOf(el) {
+    var form = el.form || (el.closest ? el.closest("form") : null);
+    if (!form) return null;
+    return identityKey(elementInfo(form));
+  }
+
+  function attemptFor(formKey) {
+    var k = formKey || "(page)";
+    return formAttempts[k] ||
+      (formAttempts[k] = { touched: {}, filled: {}, ms: 0, fields: 0 });
+  }
+
+  function onFocusIn(ev) {
+    var t = ev.target;
+    if (!t || !t.matches || !t.matches(FIELD_SELECTOR)) return;
+    endFieldEpisode();
+    activeField = {
+      el: t, info: elementInfo(t), form: formKeyOf(t),
+      ftype: t.tagName === "SELECT" ? "select"
+           : t.tagName === "TEXTAREA" ? "textarea"
+           : (t.type || "text"),
+      since: now(), edits: 0
+    };
+    if (t.form && t.form.elements) {
+      attemptFor(activeField.form).fields = t.form.elements.length;
+    }
+  }
+
+  function onInput(ev) {
+    if (activeField && ev.target === activeField.el) activeField.edits++;
+  }
+
+  function endFieldEpisode() {
+    if (!activeField) return;
+    var f = activeField;
+    activeField = null;
+    var ms = now() - f.since;
+    var filled = isFilled(f.el);
+    var key = identityKey(f.info);
+    if (key) {
+      var attempt = attemptFor(f.form);
+      attempt.touched[key] = 1;
+      if (filled) attempt.filled[key] = 1; else delete attempt.filled[key];
+      attempt.ms += ms;
+    }
+    if (ms < 200 && f.edits === 0) return;      // glance-through, not engagement
+    var e = base("field");
+    e.ms = ms;
+    e.edits = f.edits;
+    e.filled = filled;
+    e.ftype = f.ftype;
+    e.el = f.info;
+    if (f.form) e.form = f.form;
+    push(e);
+  }
+
+  // Fallback for value changes that never got a focus episode (browser
+  // autofill, programmatic selection): still record the touch, with ms 0.
+  function onChange(ev) {
+    var t = ev.target;
+    if (!t || !t.matches || !t.matches(FIELD_SELECTOR)) return;
+    if (activeField && activeField.el === t) return;   // episode will report it
+    var info = elementInfo(t);
+    var key = identityKey(info);
+    if (!key) return;
+    var formKey = formKeyOf(t);
+    var filled = isFilled(t);
+    var attempt = attemptFor(formKey);
+    attempt.touched[key] = 1;
+    if (filled) attempt.filled[key] = 1; else delete attempt.filled[key];
+    var e = base("field");
+    e.ms = 0;
+    e.edits = 1;
+    e.filled = filled;
+    e.ftype = t.tagName === "SELECT" ? "select" : (t.type || "text");
+    e.el = info;
+    if (formKey) e.form = formKey;
+    push(e);
+  }
+
+  function emitFormOutcome(formKey, outcome) {
+    var attempt = formAttempts[formKey];
+    if (!attempt) return;
+    delete formAttempts[formKey];
+    var touched = Object.keys(attempt.touched).length;
+    if (!touched && outcome === "abandon") return;   // never engaged: not an abandon
+    var e = base("form");
+    e.form = formKey;
+    e.outcome = outcome;
+    e.touched = touched;
+    e.filled = Object.keys(attempt.filled).length;
+    e.ms = attempt.ms;
+    if (attempt.fields) e.fields = attempt.fields;
+    push(e);
+  }
+
+  function onSubmit(ev) {
+    endFieldEpisode();
+    var key = ev.target && ev.target.tagName === "FORM"
+      ? identityKey(elementInfo(ev.target)) : null;
+    emitFormOutcome(key || "(page)", "submit");
+  }
+
+  function abandonOpenForms() {
+    endFieldEpisode();
+    for (var k in formAttempts) emitFormOutcome(k, "abandon");
+  }
+
   // ------------------------------------------------------------------- route
 
   function onRouteChange() {
     var next = route();
     if (next === currentRoute) return;
+    abandonOpenForms();
     flushRouteDwell();
     for (var k in elDwell) flushElementDwell(k, elDwell[k]);
     currentRoute = next;
@@ -298,8 +433,13 @@
 
       currentRoute = route();
       document.addEventListener("click", onClick, true);
+      document.addEventListener("focusin", onFocusIn, true);
+      document.addEventListener("focusout", function () { endFieldEpisode(); }, true);
+      document.addEventListener("input", onInput, true);
+      document.addEventListener("change", onChange, true);
+      document.addEventListener("submit", onSubmit, true);
       document.addEventListener("visibilitychange", onVisibility);
-      global.addEventListener("pagehide", function () { flush(true); });
+      global.addEventListener("pagehide", function () { abandonOpenForms(); flush(true); });
       hookHistory();
 
       push(base("view"));

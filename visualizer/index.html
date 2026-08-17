@@ -178,11 +178,40 @@
         <th data-k="key">Element <span class="arrow"></span></th>
         <th class="num" data-k="clicks">Clicks <span class="arrow"></span></th>
         <th class="num" data-k="clickShare">Click share <span class="arrow"></span></th>
-        <th class="num" data-k="dwellMs">Time visible <span class="arrow"></span></th>
+        <th class="num" data-k="dwellMs">Time spent <span class="arrow"></span></th>
         <th data-k="_bar">Share</th>
       </tr></thead>
       <tbody></tbody>
     </table></div>
+
+    <div id="formsview" style="display:none">
+      <h2>Form fields — engagement and fill rate</h2>
+      <div class="tablewrap"><table id="fieldtable">
+        <thead><tr>
+          <th>Field</th><th>Form</th><th>Type</th>
+          <th class="num">Time focused</th>
+          <th class="num">Edits</th>
+          <th class="num">Sessions touched</th>
+          <th class="num">Fill rate</th>
+          <th>Time share</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+
+      <h2>Forms — outcomes</h2>
+      <div class="tablewrap"><table id="formtable">
+        <thead><tr>
+          <th>Form</th>
+          <th class="num">Attempts</th>
+          <th class="num">Submitted</th>
+          <th class="num">Abandoned</th>
+          <th class="num">Completion</th>
+          <th class="num">Avg time per attempt</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
     <p class="note" id="srcnote"></p>
   </div>
 
@@ -230,10 +259,11 @@ const state = {
 
 function newRoute() {
   return { views: 0, sessions: new Set(), clicks: 0, dwellMs: 0,
-           viewports: new Map(), grid: null, points: [], elements: new Map() };
+           viewports: new Map(), grid: null, points: [], elements: new Map(),
+           fields: new Map(), forms: new Map() };
 }
 function elKey(el) {
-  for (const k of ["tid", "id", "sel"]) if (typeof el[k] === "string" && el[k]) return [el[k], k];
+  for (const k of ["tid", "id", "name", "sel"]) if (typeof el[k] === "string" && el[k]) return [el[k], k];
   return [null, null];
 }
 
@@ -266,7 +296,7 @@ function ingestFiles(files) {
 
 function ingestEvent(ev) {
   if (!ev || ev.v !== 1 || typeof ev.route !== "string") return false;
-  if (!["click", "dwell", "view"].includes(ev.t)) return false;
+  if (!["click", "dwell", "view", "field", "form"].includes(ev.t)) return false;
   const r = state.routes[ev.route] || (state.routes[ev.route] = newRoute());
   if (typeof ev.sid === "string") r.sessions.add(ev.sid);
   if (ev.vp && Number.isInteger(ev.vp.w) && ev.vp.w > 0 && Number.isInteger(ev.vp.h) && ev.vp.h > 0) {
@@ -281,6 +311,36 @@ function ingestEvent(ev) {
       if (r.points.length < 200000) r.points.push([ev.x, ev.y]);
     }
     touchElement(r, ev.el, 1, 0);
+    return true;
+  }
+  if (ev.t === "field") {
+    if (!Number.isInteger(ev.ms) || ev.ms < 0 || !ev.el) return false;
+    const [key, kind] = elKey(ev.el);
+    if (!key) return false;
+    let f = r.fields.get(key);
+    if (!f) {
+      f = { key, kind, focusMs: 0, edits: 0, blurs: 0, form: ev.form || null,
+            ftype: ev.ftype || null, touched: new Set(), filled: new Set() };
+      r.fields.set(key, f);
+    }
+    f.focusMs += ev.ms;
+    f.blurs++;
+    if (Number.isInteger(ev.edits)) f.edits += ev.edits;
+    if (typeof ev.sid === "string") {
+      f.touched.add(ev.sid);
+      if (ev.filled === true) f.filled.add(ev.sid);
+    }
+    // Focused time is time spent on that element: feed the time-spent heatmap.
+    touchElement(r, ev.el, 0, ev.ms);
+    return true;
+  }
+  if (ev.t === "form") {
+    if (typeof ev.form !== "string" || !["submit", "abandon"].includes(ev.outcome)) return false;
+    let fo = r.forms.get(ev.form);
+    if (!fo) { fo = { key: ev.form, submits: 0, abandons: 0, ms: 0, fields: 0 }; r.forms.set(ev.form, fo); }
+    fo[ev.outcome === "submit" ? "submits" : "abandons"]++;
+    if (Number.isInteger(ev.ms) && ev.ms >= 0) fo.ms += ev.ms;
+    if (Number.isInteger(ev.fields)) fo.fields = Math.max(fo.fields, ev.fields);
     return true;
   }
   // dwell
@@ -328,6 +388,24 @@ function ingestAggregate(agg) {
       if (!m) { m = { key, kind: e.kind || "sel", clicks: 0, dwellMs: 0, rect: e.rect || null, _n: 1 }; r.elements.set(key, m); }
       m.clicks += e.clicks || 0; m.dwellMs += e.dwellMs || 0;
       if (!m.rect && e.rect) m.rect = e.rect;
+    }
+    for (const [key, f] of Object.entries(v.fields || {})) {
+      let m = r.fields.get(key);
+      if (!m) {
+        m = { key, kind: f.kind || "name", focusMs: 0, edits: 0, blurs: 0,
+              form: f.form || null, ftype: f.ftype || null, touched: 0, filled: 0 };
+        r.fields.set(key, m);
+      }
+      m.focusMs += f.focusMs || 0; m.edits += f.edits || 0; m.blurs += f.blurs || 0;
+      m.touched = (typeof m.touched === "number" ? m.touched : m.touched.size) + (f.sessionsTouched || 0);
+      m.filled = (typeof m.filled === "number" ? m.filled : m.filled.size) + (f.sessionsFilled || 0);
+    }
+    for (const [key, f] of Object.entries(v.forms || {})) {
+      let fo = r.forms.get(key);
+      if (!fo) { fo = { key, submits: 0, abandons: 0, ms: 0, fields: 0 }; r.forms.set(key, fo); }
+      fo.submits += f.submits || 0; fo.abandons += f.abandons || 0;
+      fo.ms += (f.avgMs || 0) * ((f.submits || 0) + (f.abandons || 0));
+      fo.fields = Math.max(fo.fields, f.fields || 0);
     }
   }
   if (agg.source) state.srcInfo = `aggregate of ${agg.source.events} events from ${agg.source.files} file(s)`;
@@ -377,19 +455,67 @@ function render() {
   renderOverlay(r);
   renderLegend(r);
   renderTable(r);
+  renderForms(r);
   $("srcnote").textContent = "Source: " + state.srcInfo +
     ". All processing happens locally in this page.";
 }
 
 function renderTiles(r) {
   const avg = r.views ? r.dwellMs / r.views : 0;
-  $("tiles").innerHTML = [
+  const tiles = [
     ["Views", fmtN(r.views)],
     ["Sessions", fmtN(sessionsOf(r))],
     ["Clicks", fmtN(r.clicks)],
     ["Total time on screen", fmtMs(r.dwellMs)],
     ["Avg time per view", fmtMs(Math.round(avg))],
-  ].map(([k, v]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  ];
+  let submits = 0, attempts = 0;
+  for (const fo of r.forms.values()) { submits += fo.submits; attempts += fo.submits + fo.abandons; }
+  if (attempts) tiles.push(["Form completion", Math.round(100 * submits / attempts) + "%"]);
+  $("tiles").innerHTML = tiles
+    .map(([k, v]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+}
+
+function countOf(v) { return typeof v === "number" ? v : v.size; }
+
+function renderForms(r) {
+  const has = r.fields.size || r.forms.size;
+  $("formsview").style.display = has ? "block" : "none";
+  if (!has) return;
+
+  const fields = [...r.fields.values()].sort((a, b) => b.focusMs - a.focusMs);
+  const totalFocus = Math.max(1, fields.reduce((s, f) => s + f.focusMs, 0));
+  $("fieldtable").querySelector("tbody").innerHTML = fields.map(f => {
+    const touched = countOf(f.touched), filled = countOf(f.filled);
+    const rate = touched ? filled / touched : 0;
+    const share = f.focusMs / totalFocus;
+    const [cr, cg, cb] = rampColor("dwell", Math.sqrt(share));
+    return `<tr>
+      <td class="key" title="${escapeHtml(f.key)}">${escapeHtml(f.key)}<span class="kind">${f.kind}</span></td>
+      <td>${f.form ? escapeHtml(f.form) : "—"}</td>
+      <td>${f.ftype ? escapeHtml(f.ftype) : "—"}</td>
+      <td class="num">${fmtMs(f.focusMs)}</td>
+      <td class="num">${fmtN(f.edits)}</td>
+      <td class="num">${fmtN(touched)}</td>
+      <td class="num">${touched ? (rate * 100).toFixed(0) + "%" : "—"}</td>
+      <td><span class="bar" style="width:${Math.max(2, Math.round(share * 140))}px;
+        background:rgb(${cr},${cg},${cb})"></span></td>
+    </tr>`;
+  }).join("");
+
+  const forms = [...r.forms.values()].sort((a, b) =>
+    (b.submits + b.abandons) - (a.submits + a.abandons));
+  $("formtable").querySelector("tbody").innerHTML = forms.map(fo => {
+    const attempts = fo.submits + fo.abandons;
+    return `<tr>
+      <td class="key">${escapeHtml(fo.key)}</td>
+      <td class="num">${fmtN(attempts)}</td>
+      <td class="num">${fmtN(fo.submits)}</td>
+      <td class="num">${fmtN(fo.abandons)}</td>
+      <td class="num">${attempts ? Math.round(100 * fo.submits / attempts) + "%" : "—"}</td>
+      <td class="num">${attempts ? fmtMs(Math.round(fo.ms / attempts)) : "—"}</td>
+    </tr>`;
+  }).join("");
 }
 
 function layoutStage(r) {
@@ -530,7 +656,7 @@ function renderLegend(r) {
   } else {
     let maxDwell = 0;
     for (const e of r.elements.values()) maxDwell = Math.max(maxDwell, e.dwellMs);
-    $("legendtitle").textContent = "Time visible per element";
+    $("legendtitle").textContent = "Time spent per element";
     $("legmin").textContent = "0";
     $("legmax").textContent = fmtMs(maxDwell);
     $("legnote").textContent = "(square-root scale)";
@@ -578,7 +704,7 @@ function showTip(ev, r, key) {
   const tip = $("tooltip");
   tip.innerHTML = `<div class="tkey">${escapeHtml(e.key)}</div>
     <div class="trow">clicks <b>${fmtN(e.clicks)}</b></div>
-    <div class="trow">time visible <b>${e.dwellMs ? fmtMs(e.dwellMs) : "—"}</b></div>
+    <div class="trow">time spent <b>${e.dwellMs ? fmtMs(e.dwellMs) : "—"}</b></div>
     <div class="trow">identified by <b>${e.kind}</b></div>`;
   tip.style.display = "block";
   const pad = 14;
